@@ -1,0 +1,166 @@
+---
+- name: Web Server Configuration Playing
+  hosts: web-servers
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Disable SELinux
+      selinux:
+        state: disabled
+    - #name: Apache Service Install
+      #yum:
+        #name: httpd
+        #state: latest
+    - name: Yum Repository Add
+      yum:
+        name: centos-release-scl
+        state: latest
+    - name: Install git
+      yum:
+        name: git
+        state: latest
+    - name: Python 3 Install
+      yum:
+        name:
+          - python3
+          - python3-pip
+          - python3-devel
+          - rh-python36-mod_wsgi
+        state: latest
+    - #name: mod_wsgi 소스 파일 이동
+      #copy:
+        #src: /opt/rh/httpd24/root/usr/lib64/httpd/modules/mod_rh-python36-wsgi.so
+        #dest: /etc/httpd/modules/mod_rh-python36-wsgi.so
+        #mode: 0755
+        #remote_src: yes
+    - #name: mod_wsgi 모듈 설정 파일 이동
+      #copy:
+        #src: /opt/rh/httpd24/root/etc/httpd/conf.modules.d/10-rh-python36-wsgi.conf
+        #dest: /etc/httpd/conf.modules.d/10-mod_wsgi.conf
+        #mode: 0644
+        #remote_src: yes #src를 원격장치로 설정 
+                        #기본 설정은 로컬(앤서블)에서 원격장치임
+    - name: Django/MariaDB 연동 구성을 위한 추가 패키지 설치
+      yum:
+        name:
+          - gcc
+          - mariadb-devel
+        state: latest
+    - name: pip로 Django, mysqlclient 설치
+      # pip:
+      #   name:
+      #     - django==2.2.15
+      #     - mysqlclient==1.4.6
+      #   executable: pip3.6
+      shell:
+        cmd: pip3 install {{ pip_django }} && pip3 install {{ pip_mysqlcli }}
+    - #name: Django Project Create
+      #shell:
+        #chdir: /var/www/
+        #cmd: /usr/local/bin/django-admin startproject {{ web_project_name }}
+        #creates: /var/www/{{ web_project_name }}/manage.py
+    - #name: Apache-Django Configuration File Copy
+      #copy: 
+      #template: 변수가 아닌값을 변수로 변경   
+      #template:   
+        #src: /vagrant/data/apache/django.conf
+        #dest: /etc/httpd/conf.d/django.conf
+        #mode: 0644
+    - #name: Web Source Copy
+      #copy:
+        #src: /vagrant/data/web_source/
+        #dest: /var/www/html/
+        #directory_mode: 0755
+        #owner: apache
+        #group: apache
+        #mode: 0644
+    - #name: Apache Service Start
+      #service:
+        #name: httpd
+        #state: started
+        #enabled: yes
+- name: Database Init Playing
+  hosts: db-servers
+  gather_facts: false
+  become: true
+  tasks:
+    - name: MySQL/MariaDB 설치
+      yum:
+        name:
+          - mariadb
+          - mariadb-server
+        state: latest
+    - name: MySQL/MariaDB 서비스 시작
+      service:
+        name: mariadb
+        state: started
+        enabled: yes
+    - name: DB 계정 생성
+      shell:
+        cmd: mysql -u root -e "GRANT ALL PRIVILEGES ON *.* TO '{{ db_user }}'@'%' IDENTIFIED BY '{{ db_pass }}';"
+    - name: Database 스키마 생성
+      shell:
+        cmd: mysql -u root -e "CREATE DATABASE IF NOT EXISTS {{ db_name }};"
+        #if not exists 는 멱등성을 지키기위함 
+- name: Django Connection DataBase
+  hosts: web-servers
+  gather_facts: false
+  become: true
+  tasks:
+    #- name: download django project from github
+      #shell:
+        #cmd: sudo mkdir /{{ web_project_name }} && cd /{{ web_project_name }}
+    - name: download django project from github
+      #shell:
+        #cmd: git clone https://github.com/soobeen-jang/django_sample_project.git
+      git:
+        repo: 'https://github.com/soobeen-jang/django_sample_project.git'
+        dest: /{{ web_project_name }}
+        force: yes
+    - name: Allowed Hosts 수정
+      lineinfile:
+        dest: /{{ web_project_name }}/{{ web_project_name }}/{{ web_project_name }}/settings.py
+        regexp: "^ALLOWED_HOSTS"
+        line: ALLOWED_HOSTS = ["{{ allowed_host }}"]
+    - name: Database 구성 수정/추가
+      blockinfile:
+        path: /{{ web_project_name }}/{{ web_project_name }}/{{ web_project_name }}/settings.py
+        block: |
+          DATABASES = {
+              'default': {
+                  'ENGINE': 'django.db.backends.mysql',
+                  'NAME': '{{ db_name }}',
+                  'USER': '{{ db_user }}',
+                  'PASSWORD': '{{ db_pass }}',
+                  'HOST': '{{ db_host }}',
+                  'PORT': '{{ db_port }}'
+              }
+          }
+          STATIC_URL = '/static/'
+          STATIC_ROOT = os.path.join(BASE_DIR, 'static')
+          STATICFILES_DIRS = [
+            #os.path.join(BASE_DIR, 'mysite/static')
+          ]
+    - name: Django Database Migration
+      # django_manage:
+      #   command: migrate
+      #   app_path: /var/www/{{ web_project_name }}/
+      shell:
+        chdir: /{{ web_project_name }}/{{ web_project_name }}/
+        cmd: python3 manage.py migrate
+    - name: Django Collect Static Files 
+      shell:
+        chdir: /{{ web_project_name }}/{{ web_project_name }}/
+        cmd: python3 manage.py collectstatic --clear --noinput 
+    - name: Django AdminSite AdminAccount Creation 
+      shell:
+        chdir: /{{ web_project_name }}/{{ web_project_name }}/
+        cmd: echo "from django.contrib.auth.models import User; from django.contrib.auth.hashers import make_password; User.objects.update_or_create(username='{{ db_user }}', defaults={'email'{{':'}} 'abhyuni@gmail.com', 'password'{{':'}} make_password('{{ db_pass }}'), 'is_staff'{{':'}} True, 'is_superuser'{{':'}} True})" | python3 manage.py shell
+    - #name: Apache Service Reload
+      #service:
+        #name: httpd
+        #state: restarted
+    - name: django server start 
+      shell:
+        chdir: /{{ web_project_name }}/{{ web_project_name }}/
+        cmd: python3 manage.py runserver 0.0.0.0:80
